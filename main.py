@@ -3,6 +3,7 @@ import json
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
@@ -19,6 +20,8 @@ app.add_middleware(
 )
 
 
+# ---------------- HOME ----------------
+
 @app.get("/")
 def home():
     return {
@@ -26,6 +29,8 @@ def home():
         "message": "Plant Doctor AI API is running 🌱"
     }
 
+
+# ---------------- PLANT DISEASE PREDICTION ----------------
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
@@ -86,9 +91,8 @@ Return ONLY valid JSON in this exact format:
 
 Important:
 - confidence must be a number from 0 to 100.
-- If the image is unclear or you cannot reliably identify the plant/disease,
-  use disease = "पहचान स्पष्ट नहीं है" and confidence <= 50.
-- Do not invent a disease when the image does not provide enough evidence.
+- If the image is unclear, use disease = "पहचान स्पष्ट नहीं है".
+- Do not invent a disease when there is not enough evidence.
 - Give the explanation in simple Hindi.
 - Do not recommend unsafe or hazardous chemical use.
 """
@@ -114,7 +118,10 @@ Important:
         return {
             "success": True,
             "crop": result.get("crop", "Unknown"),
-            "disease": result.get("disease", "पहचान स्पष्ट नहीं है"),
+            "disease": result.get(
+                "disease",
+                "पहचान स्पष्ट नहीं है"
+            ),
             "confidence": result.get("confidence", 0),
             "description": result.get(
                 "description",
@@ -135,3 +142,87 @@ Important:
             status_code=500,
             detail=f"AI analysis error: {str(e)}"
         )
+
+
+# ---------------- AI QUESTION FEATURE ----------------
+
+class QuestionRequest(BaseModel):
+    question: str
+    crop: str = ""
+
+
+@app.post("/ask")
+async def ask_ai(data: QuestionRequest):
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY Render में सेट नहीं है।"
+        )
+
+    question = data.question.strip()
+
+    if not question:
+        raise HTTPException(
+            status_code=400,
+            detail="कृपया अपना सवाल लिखें।"
+        )
+
+    if len(question) > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail="सवाल बहुत लंबा है। कृपया छोटा सवाल पूछें।"
+        )
+
+    crop = data.crop.strip()
+
+    try:
+
+        client = genai.Client(api_key=api_key)
+
+        prompt = f"""
+You are Plant Doctor AI.
+
+You are an agricultural assistant for farmers.
+
+Answer the user's question in simple Hindi.
+
+Selected crop:
+{crop if crop else "कोई crop select नहीं किया गया"}
+
+User question:
+{question}
+
+Rules:
+- Give practical and easy-to-understand agricultural information.
+- If the question is about plant disease, explain possible causes and prevention.
+- Do not claim that an AI answer is a guaranteed diagnosis.
+- Do not provide unsafe or hazardous chemical instructions.
+- If pesticide/fertilizer use is discussed, advise checking the product label
+  and confirming with a qualified local agriculture expert.
+- If the question cannot be answered reliably, say so clearly.
+- Keep the answer concise but useful.
+"""
+
+        response = client.models.generate_content(
+            model="gemini-3.7-flash",
+            contents=prompt
+        )
+
+        answer = response.text
+
+        if not answer:
+            raise Exception("Gemini ने कोई answer नहीं दिया।")
+
+        return {
+            "success": True,
+            "answer": answer
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI question error: {str(e)}"
+    )
